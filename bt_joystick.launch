@@ -1,0 +1,3 @@
+<launch>
+    <include file="$(find bt_joystick)/bt_joystick_node.launch"/>
+</launch>

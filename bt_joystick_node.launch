@@ -1,0 +1,5 @@
+<launch>
+    <node pkg="bt_joystick" type="bt_joystick.py" name="bt_joystick" output="screen">
+	<rosparam file="$(find bt_joystick)/bt_joystick.yaml"/>
+    </node>
+</launch>

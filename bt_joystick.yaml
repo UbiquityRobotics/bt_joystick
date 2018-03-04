@@ -1,0 +1,9 @@
+bt_mac_address: "FF:FF:80:06:6C:59"
+speed_stopped: 0.0
+speed_fwd_normal: 0.1
+speed_fwd_turning: 0.1
+speed_rev_normal: -0.10
+speed_turbo_multiplier: 1.75
+angular_straight_rate: 0.0
+angular_turning_rate: 0.3
+angular_rotate_rate: 0.4
