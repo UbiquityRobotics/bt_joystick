@@ -1,4 +1,4 @@
-# Bluetooth BLE Joystick node for the Magicsee R1 joystick in gamepad mode =
+# Bluetooth BLE Joystick node for the Magicsee R1 joystick in gamepad mode
 
 This code implemente a ROS node to interface a Magicsee R1 ring-held Bluetooth LE joystick/gamepad for /cmd_vel robot control
 
