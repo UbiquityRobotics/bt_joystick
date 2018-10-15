@@ -4,29 +4,45 @@
 # ROS node to interface a Magicsee R1 ring-held Bluetooth LE joystick/gamepad for /cmd_vel robot control
 #
 # The hand controller notifications are received by this node for the joystick and buttons.
-# This node then publishes to ROS topic with 'twist' messages normally we use topic /cmd_vel
-# The default /cmd_vel topic and speeds may be changed using parameters 
+#
+# This node then publishes to either (or both) a /joy or /cmd_vel type of ROS topic
+# The /joy topic gets joystick messages and the /cmd_vel topic gets 'twist' messages
+# and all 6 buttons are mapped to the /joy 'buttons' array as 1 for pressed and 0 for released
+# The default /cmd_vel topic and speeds may be changed using parameters
+# Release of the joystick causes velocity in all modes to go back to 0
+#
+# Speed is increased with button A or decreased with button C (defined in g_speed_increase_bit and g_speed_decrease_bit)
+# (speed_turbo button removed Oct 2018)
 #
 # Configuration is done in:  catkin_ws/src/demos/bt_joystick/bt_joystick.yaml
 # The BT MAC address MUST match the hand controller to be used.
-# Use App like nRFConnect and get address for 'Magicsee R1' (usually starts with FF:FF:80:06)
+# Turn on the BT joystick and while it blinks blue led use 'hcitool lescan' for a Bluetooth Scan
+# Alternately you can use other scan tools such as an App like nRFConnect
+# find the address for 'Magicsee R1' (usually starts with FF:FF:80:06)
+# Put this address in as the bt_mac_address in the bt_joystick.yaml file
 #
 # WARNING:  You MUST start the Bt Joystick first AND simul-press 'M' + 'B' before launching node!
 #
 # ROS Param            Default  Description
 # bt_mac_address          xx    Bluetooth LE MAC Address 
+# output_to_joy           1     Output control messages to the /joy ROS topic using Joy messages
+# output_to_cmd_vel       0     Output control messages to the /cmd_vel ROS topic using twist messages
 # speed_stopped           0.0   Robot X speed when stopped (can be used to null out robot offset)
 # speed_fwd_normal        0.2   Robot forward X speed in M/Sec for joystick forward straight
+# speed_fwd_inc           0.05  Increment in M/Sec for a speed increment
 # speed_fwd_turning       0.2   Robot forward X speed in M/Sec for joystick in turn mode (not rotate mode)
 # speed_rev_normal       -0.15  Robot reverse X speed in M/Sec for joystick reverse straight back
-# speed_turbo_multiplier  1.75  Speed multiplier for X speed if in a mode where X is non-zero
 # angular_straight_rate   0.0   Robot Z angular rate when stopped (can be used to null out robot offset)
 # angular_turning_rate    0.3   Robot Z angular rate in Rad/Sec when turning (not for rotate)
 # angular_rotate_rate     0.4   Robot Z angular rate in Rad/Sec when rotating
+# angular_rotate_inc      0.1   Increment in ad/Sec for a rotate increment
+# angular_rotate_max      2.0   Max Robot Z angular rate in Rad/Sec
 
 # Run the raw python code without full launch file
 # Turn off then on the controller. Then press it's side 'M' at same time as 'B' and release
 # Next run the node from catkin_ws:   catkin_ws> roslaunch bt_joystick bt_joystick.launch
+# To run the node without ROS launch or the yaml config file you can run from where the script is:
+# python nodes/bt_joystick.py FF:FF:80:06:6C:59
 #
 # System Limitations (beside having ROS environment and bt_joystick node configured)
 # - Must start bluetooth.service with -compat and some config for a user in group bluetooth to use
@@ -56,12 +72,13 @@ import time
 # import ROS related support including Twist messages
 import rospy
 from geometry_msgs.msg import Twist
+from sensor_msgs.msg import Joy
 
 # simple version string
-g_version = "20180207"
+g_version = "20181012"
 
 # Bluetooth MAC address if none is supplied
-g_bt_mac_address = "FF:FF:80:06:6D:67"
+g_bt_mac_address = "FF:FF:80:06:6C:59"
 
 # This debug flag if set True enables prints and so on but cannot be used in production
 g_debug = False
@@ -73,6 +90,26 @@ g_disconnectTime = float(0.4)
 g_joystickBits = int(0)
 g_buttonBits   = int(0)
 g_fwdVel       = float(0.0)
+
+# define bits we read from ring controller for keys pressed
+button_a_bit   = int(4)   # 0x10
+button_b_bit   = int(0)   # 0x01
+button_c_bit   = int(3)   # 0x08
+button_d_bit   = int(1)   # 0x02
+button_o_bit   = int(6)   # 0x40
+button_r_bit   = int(7)   # 0x80
+
+# define what button bit is set in /joy message for each BT joystick button
+button_a_joy_bit   = int(0)   # 0x10
+button_b_joy_bit   = int(1)   # 0x01
+button_c_joy_bit   = int(2)   # 0x08
+button_d_joy_bit   = int(3)   # 0x02
+button_o_joy_bit   = int(4)   # 0x40
+button_r_joy_bit   = int(5)   # 0x80
+
+# define which keys will be used to increment speed for max joystick values
+g_speed_increase_bit = int(button_a_bit)
+g_speed_decrease_bit = int(button_c_bit)
 
 # Simple wrappers to prevent log overhead and use desired log functions for your system
 def logAlways(message):
@@ -165,6 +202,7 @@ class ReceiveNotificationLooper(object):
         try:
             # if already connected connect() will throw runtime_error
             if self.requester.is_connected() == False:
+                # remove True for wait so can run as user  self.requester.connect(True)
                 self.requester.connect(True)
         except RuntimeError,e: 
             logAlways("Exception in connect: " + e.message)
@@ -218,6 +256,11 @@ def btjoystickcapture():
 
         logDebug ("Notification done")
 
+# test a single bit of an integer to see if it is set or clear
+def testBit(int_type, offset):
+    mask = 1 << offset
+    return(int_type & mask)
+
 class btjoystick():
     def __init__(self):
         
@@ -251,21 +294,34 @@ class btjoystick():
         self.bt_mac_address = rospy.get_param("~bt_mac_address", g_bt_mac_address)
         g_bt_mac_address = self.bt_mac_address
 
+        # Define which sort of outputs this node will send to ROS topics for bot control
+        self.output_to_joy = rospy.get_param("~output_to_joy", 1)
+        self.output_to_cmd_vel = rospy.get_param("~output_to_cmd_vel", 0)
+
+        # Best to keep fwd_max / fwd_inc integer and equal to rev_max / rev_inc
+        self.speed_fwd_max = rospy.get_param("~speed_fwd_max", 2.0)
+        self.speed_fwd_inc = rospy.get_param("~speed_fwd_inc", 0.1)
+        self.speed_rev_max = rospy.get_param("~speed_fwd_max", -1.0)
+        self.speed_rev_inc = rospy.get_param("~speed_fwd_inc", 0.05)
         self.speed_stopped = rospy.get_param("~speed_stopped", 0.0)
-        self.speed_fwd_normal = rospy.get_param("~speed_fwd_normal", 0.2)
+        self.speed_fwd_normal = rospy.get_param("~speed_fwd_normal", 0.3)
         self.speed_fwd_turning = rospy.get_param("~speed_fwd_turning", 0.2)
         self.speed_rev_normal = rospy.get_param("~speed_rev_normal", -0.15)
-        self.speed_turbo_multiplier = rospy.get_param("~speed_turbo_multiplier", 1.75)
+        self.speed_rev_inc = rospy.get_param("~speed_fwd_inc", 0.05)
         self.angular_straight_rate = rospy.get_param("~angular_straight_rate", 0.0)
         self.angular_turning_rate = rospy.get_param("~angular_turning_rate", 0.3)
         self.angular_rotate_rate = rospy.get_param("~angular_rotate_rate", 1.5)
-
+        self.angular_rotate_inc = rospy.get_param("~angular_rotate_inc", 0.1)
+        self.angular_rotate_max = rospy.get_param("~angular_rotate_inc", 3.0)
 
         logAlways("Node Parameters:")
         logAlways("MAC: " + self.bt_mac_address)
-        logAlways("ROS cmd_vel topic: /cmd_vel_base")
-        logAlways("Fwd: " + str(self.speed_fwd_normal) + " FwdTurning: " + str(self.speed_fwd_turning) + " TurboMult: " + str(self.speed_turbo_multiplier))
+        logAlways("Fwd: " + str(self.speed_fwd_normal) + " FwdTurning: " + str(self.speed_fwd_turning) + " TurboMult: ")
         logAlways("AngTurningRadSec: " + str(self.angular_turning_rate) + " AngRotateRadSec: " + str(self.angular_rotate_rate))
+        if self.output_to_cmd_vel == 1:
+            logAlways("ROS twist messages will appear on ROS topic: /cmd_vel_joy")
+        if self.output_to_joy == 1:
+            logAlways("ROS joystick messages will appear on ROS topic: /joy")
 
         #  tell user how to stop TurtleBot
         logAlways("To stop the BT Joystick node use CTRL + Z")
@@ -273,35 +329,100 @@ class btjoystick():
         # What function to call when you ctrl + c    
         rospy.on_shutdown(self.shutdown)
         
-        #  Create a publisher which can "talk" to TurtleBot and tell it to move
-        # Tip: You may need to change cmd_vel_mux/input/navi to /cmd_vel if you're not using TurtleBot2
-        self.cmd_vel = rospy.Publisher('/cmd_vel_base', Twist, queue_size=10)
+        # Setup ROS publisher(s) depending on what outputs you have enabled for this node
+        # Setup the joy message if joy ROS output is to be used
+        joy_msg = Joy()
+
+        #if self.output_to_joy == 1:
+        #    # Create a publisher which can "talk" to the ROS /joy topic and act like a joystick
+        #    self.joy = rospy.Publisher('/joy', Joy, queue_size=10)
+        self.joy = rospy.Publisher('/joy', Joy, queue_size=10)
+
+        # Setup the Twist message if cmd_vel ROS output is to be used
+        move_cmd = Twist()
+        #if self.output_to_cmd_vel == 1:
+        #    #  Create a publisher which can "talk" to TurtleBot and tell it to move
+        #    # Tip: You may need to change cmd_vel_mux/input/navi to /cmd_vel if you're not using TurtleBot2
+        #    self.cmd_vel = rospy.Publisher('/cmd_vel_joy', Twist, queue_size=10)
+        self.cmd_vel = rospy.Publisher('/cmd_vel_joy', Twist, queue_size=10)
         
         # TurtleBot will stop if we don't keep telling it to move.  How often should we tell it to move? 10 HZ
         r = rospy.Rate(10);
         
-        # Twist is a datatype for velocity
-        move_cmd = Twist()
-
         #  let's set velocity to 0 at this time
-        logAlways("Checkpoint 50")
         move_cmd.linear.x = self.speed_stopped
         #  let's turn at 0 radians/s
         move_cmd.angular.z = self.speed_stopped
-        
+
+        joy_msg.buttons = [int(0), int(0), int(0), int(0), int(0), int(0)]
+        joy_msg.axes = [0.0, 0.0]
+
         # fire off the thread that accepts bluetooth controller notifications
         logAlways("Fire off joystick event capture thread for MAC addr " + self.bt_mac_address)
         Thread(target = btjoystickcapture).start()
         logAlways("BT Joystick notification thread running")
 
+        if rospy.is_shutdown():
+            logAlways("ROS appears to be shutdown. Run roscore")
+
         # as long as you haven't ctrl + c keeping doing...
         while not rospy.is_shutdown():
-            if g_debug == True:
-                # Show when the bits have changed
-                if g_joystickBits != oldJoystickBits:
-                    logDebug("Joystick Bits Changed to: " + str(g_joystickBits) + " buttonBits: " + str(g_buttonBits))
+            # We do not force linear and angular speeds to 0 unless joystick is not pressed
+            # move_cmd.linear.x = 0.0
+            # move_cmd.angular.z = 0.0
+            # Show when the bits have changed
+            if g_buttonBits != oldButtonBits:
+                logDebug("Button Bits Changed from " + str(oldButtonBits) + "  to " + str(g_buttonBits))
+                joy_msg.buttons = [int(0), int(0), int(0), int(0), int(0), int(0)]
+
+                # update the button bits for joy message
+                if (testBit(g_buttonBits, button_a_bit) != 0):
+                    logAlways("Set Button Bit for button A")
+                    joy_msg.buttons[button_a_joy_bit] = 1
+                if (testBit(g_buttonBits, button_b_bit) != 0):
+                    logAlways("Set Button Bit for button B")
+                    joy_msg.buttons[button_b_joy_bit] = 1
+                if (testBit(g_buttonBits, button_c_bit) != 0):
+                    logAlways("Set Button Bit for button C")
+                    joy_msg.buttons[button_c_joy_bit] = 1
+                if (testBit(g_buttonBits, button_d_bit) != 0):
+                    logAlways("Set Button Bit for button D")
+                    joy_msg.buttons[button_d_joy_bit] = 1
+                if (testBit(g_buttonBits, button_o_bit) != 0):
+                    logAlways("Set Button Bit for O")
+                    joy_msg.buttons[button_o_joy_bit] = 1
+                if (testBit(g_buttonBits, button_r_bit) != 0):
+                    logAlways("Set Button Bit for R")
+                    joy_msg.buttons[button_r_joy_bit] = 1
+
+
+                # Here we do forward/reverse speed increase and decreases based on buttons A and C.
+                # We cap out at max limits for increase and stop at 0 for decreases.
+                # look for speed increase command
+                if ( not testBit(oldButtonBits, g_speed_increase_bit)) and testBit(g_buttonBits, g_speed_increase_bit):
+                    # adjust forward speed faster
+                    self.speed_fwd_normal += self.speed_fwd_inc
+                    if self.speed_fwd_normal > self.speed_fwd_max:
+                        self.speed_fwd_normal = self.speed_fwd_max
+                    # adjust reverse speed faster
+                    self.speed_rev_normal -= self.speed_rev_inc
+                    if self.speed_rev_normal < self.speed_rev_max:
+                        self.speed_rev_normal = self.speed_rev_max
+                    logAlways("Increase fwd speed to " + str(self.speed_fwd_normal) + " and rev speed to " + str(self.speed_rev_normal))
+                # look for speed decrease command
+                if ( not testBit(oldButtonBits, g_speed_decrease_bit)) and testBit(g_buttonBits, g_speed_decrease_bit):
+                    # adjust forward speed lower
+                    self.speed_fwd_normal -= self.speed_fwd_inc
+                    if self.speed_fwd_normal < 0.0:
+                        self.speed_fwd_normal = 0.0
+                    # adjust reverse speed lower
+                    self.speed_rev_normal += self.speed_rev_inc
+                    if self.speed_rev_normal > 0.0:
+                        self.speed_rev_normal = 0.0
+                    logAlways("Decrease fwd speed to " + str(self.speed_fwd_normal) + " and rev speed to " + str(self.speed_rev_normal))
+
             # the joystick notification thread maintains bits for joystick and buttons
-            # logDebug("Switch on Joystick bits")
+            logDebug("Switch on Joystick bits")
             try:
                 if g_joystickBits == 16:  # joyFwdBits:
                     logDebug("FORWARD")
@@ -327,23 +448,44 @@ class btjoystick():
                     logDebug("REVERSE")
                     move_cmd.linear.x  = self.speed_rev_normal
                     move_cmd.angular.z = self.angular_straight_rate * -1.0;
-                else:
-                    logDebug("Controller IDLE ")
+                elif g_joystickBits == 80:   # no buttons or joystick pressed
+                    # We do force linear and angular speeds to 0 when joystick is not pressed
+                    logDebug("Joystick idle. STOP")
                     move_cmd.linear.x  = self.speed_stopped
                     move_cmd.angular.z = self.angular_straight_rate;
+                else:
+                    # We do force linear and angular speeds to 0 when joystick is not pressed
+                    logDebug("Unrecognized state so ignore it")
             except Exception:
                 logAlways("bt_joystick bad bit switch!")
-            # logDebug("DONE Switch on Joystick bits")
-            # User hits the return (top) front button for faster speed
-            if g_buttonBits == 128:
-                move_cmd.linear.x = move_cmd.linear.x * self.speed_turbo_multiplier
+
+            logDebug("DONE Switch on Joystick bits of " + str(g_joystickBits))
+
+            # speed_turbo mode removed Oct 2018  It was forUser hits the return (top) front button for faster speed
+            #if g_buttonBits == 128:
+            #    move_cmd.linear.x = move_cmd.linear.x * self.speed_turbo_multiplier
+
             if g_debug == True:
                 if g_joystickBits != oldJoystickBits or g_buttonBits != oldButtonBits:
                     logAlways("New JoyBits for speed " + move_cmd.linear.x + " turnRate " + move_cmd.angular.z)
             oldJoystickBits = g_joystickBits
             oldButtonBits   = g_buttonBits
+
+             # publish the joystick output messages
+            if self.output_to_joy == 1:
+                # convert linear and angular speeds into joystick values from 0-1 based on max rates
+                joy_linear  = move_cmd.linear.x / self.speed_fwd_max
+                joy_angular = move_cmd.angular.z / self.angular_rotate_max
+                logDebug("Publish Joystick speeds: angular " + str(joy_angular) + " linear: " + str(joy_linear))
+                joy_msg.axes = [joy_angular, joy_linear]
+
+                # pack rhe button bits
+                self.joy.publish(joy_msg)
+
             # publish the velocity
-            self.cmd_vel.publish(move_cmd)
+            if self.output_to_cmd_vel == 1:
+                self.cmd_vel.publish(move_cmd)
+
             # wait for 0.1 seconds (10 HZ) and publish again
             r.sleep()
         logAlways("ROS HAS SHUTDOWN!")

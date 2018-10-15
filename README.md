@@ -1,21 +1,28 @@
 # Bluetooth BLE Joystick node for the Magicsee R1 joystick in gamepad mode
 
-This code implemente a ROS node to interface a Magicsee R1 ring-held Bluetooth LE joystick/gamepad for /cmd_vel robot control
+This code implemente a ROS node to interface a Magicsee R1 ring-held Bluetooth LE in gamepad mode
+
+Default as of Oct 2018 is to output joystick messages to ROS topic of /joy
+It is still possible to output twist messages to the ROS topic /cmd_vel_joy but not by default any longer
 
 The hand controller notifications are received by this node for the joystick and buttons.
 This node then publishes to ROS topic with 'twist' messages normally we use topic /cmd_vel
 The default /cmd_vel topic and speeds may be changed using parameters
 
+Forward and reverse speed are increased with button A or decreased with button C (works while holding joystick)
+Speed goes to 0 of joystick is released.  The joystick is 'binary' at this time so is not able to output 'analog' type values yet from joystick fine position changes.
+
 Configuration is done in:  catkin_ws/src/demos/bt_joystick/bt_joystick.yaml
 The BT MAC address MUST match the hand controller to be used.
 Use App like nRFConnect and get address for 'Magicsee R1' (usually starts with FF:FF:80:06)
 
-WARNING:  You MUST start the Bt Joystick first AND simul-press 'M' + 'B' before launching node!
+WARNING:  You MUST start the Bt Joystick first AND simul-press 'M' + 'B' for gamepad mode before launching node!
+There are some forms of recovery but not all forms of joystick off to on can be detected just yet.
 
 ## Dependencies
 
 There are many system level configuration issues that must be present for this node to operate.
-In summary the python gattlib library is used and there is other setup.
+In summary the python gattlib library is used and there is other setup and bluetooth support for the Raspberry Pi 2 or 3 depending on what is being used must be present in the kernel.   The node can run as root bot for a user to run this node requires some tricky permissions things to be setup for the user and for bluetooth mode itself.  We hope to do this someday but it is not all there as of Oct 2018.
 This README does not yet explain the setup as this node is to be included on the Ubiquity Robotics platforms that use a Raspberry Pi 3 with the kernel and system configuration required to run this node.
 
 At a minimum, the following commands are necessary:
@@ -36,6 +43,8 @@ Here is an explanation of the parameters in bt_joystick.yaml
 
     ROS Param            Default  Description
     bt_mac_address  FF:FF:80:06:6C:59     Bluetooth LE MAC Address (EACH unit is different MAC Addr)
+    output_to_joy           1     Output ROS joystick messages to the /joy ROS topic
+    output_to_cmd_vel       0     Output ROS twist messages to the /cmd_vel_joy ROS topic
     speed_stopped           0.0   Robot X speed when stopped (can be used to null out robot offset)
     speed_fwd_normal        0.2   Robot forward X speed in M/Sec for joystick forward straight
     speed_fwd_turning       0.2   Robot forward X speed in M/Sec for joystick in turn mode (not rotate mode)
@@ -44,6 +53,13 @@ Here is an explanation of the parameters in bt_joystick.yaml
     angular_straight_rate   0.0   Robot Z angular rate when stopped (can be used to null out robot offset)
     angular_turning_rate    0.3   Robot Z angular rate in Rad/Sec when turning (not for rotate)
     angular_rotate_rate     0.4   Robot Z angular rate in Rad/Sec when rotating
+
+## Manually running the bt_joystick node
+
+You may manually start this python ROS node as root as long as 'roscore' is running already and the ROOT window you are using has been setup to know ROS environment (typically run once as root:  source /opt/ros/kinetic/setup.bash to do the environment setup).
+
+To then run the node with defaults in the code (not from the yaml file) run this:
+python nodes/bt_joystick.py FF:FF:80:06:6C:59    (Where the MAC address matches your joystick MAC seen with some type of BLE scan tool)
 
 ## System Limitations
 
