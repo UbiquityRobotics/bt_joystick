@@ -25,12 +25,26 @@ There are many system level configuration issues that must be present for this n
 In summary the python gattlib library is used and there is other setup and bluetooth support for the Raspberry Pi 2 or 3 depending on what is being used must be present in the kernel.   The node can run as root bot for a user to run this node requires some tricky permissions things to be setup for the user and for bluetooth mode itself.  We hope to do this someday but it is not all there as of Oct 2018.
 This README does not yet explain the setup as this node is to be included on the Ubiquity Robotics platforms that use a Raspberry Pi 3 with the kernel and system configuration required to run this node.
 
-At a minimum, the following commands are necessary:
+At a minimum, if your image has a great many things the following commands are necessary:
 
 ```
 sudo apt install libbluetooth-dev
 pip install gattlib
 ```
+
+For those who are curious as to what it takes all together on a base Ubuntu image here are details.  To limit the number of lines below I use semicolin to let me show multiple commands on one line below. 
+
+```
+sudo apt-get install -y bluetooth bluez bluez-tools bluez-firmware blueman libbluetooth-dev
+sudo apt-get install pkg-config libboost-python-dev libboost-thread-dev libbluetooth-dev libglib2.0-dev python-dev
+sudo apt-get -y install python-pip;   pip install --upgrade setuptools;
+Suggest you have a swapfile setup and if not look into:  sudo apt-get install dphys-swapfile
+export MAKEFLAGS="-j 2" ; sudo pip install gattlib      (MAKEFLAGS export and ulimit to not soak up all memory)
+```
+
+## Raspberry Pi 3B+
+The June 2018 Ubiquity kernel images are not yet setup to have the proper driver for bluetooth on the 2018 Pi 3B+ as they use a different chipset.  Ubiquity plans on getting a Kernel image that does have the proper driver soon as a high priority but we have many 'high priorities' so we don't have a precise date.  In that image we hope to have the complex installs and so on all on the image as well as proper driver for the bluetooth.
+
 
 ## Configuration
 
@@ -56,16 +70,20 @@ Here is an explanation of the parameters in bt_joystick.yaml
 
 ## Manually running the bt_joystick node
 
-You may manually start this python ROS node as root as long as 'roscore' is running already and the ROOT window you are using has been setup to know ROS environment (typically run once as root:  source /opt/ros/kinetic/setup.bash to do the environment setup).
+You may manually start this python ROS node as root as long as 'roscore' is running already and the ROOT window you are using has been setup to know ROS environment using this set of commands if in the bt_joystick local repository
 
-To then run the node with defaults in the code (not from the yaml file) run this:
-python nodes/bt_joystick.py FF:FF:80:06:6C:59    (Where the MAC address matches your joystick MAC seen with some type of BLE scan tool)
+```
+hcitool lescan             (find mac addr for Magicsee to use for the script then use Ctrl-C)
+source /opt/ros/kinetic/setup.bash
+python nodes/bt_joystick.py FF:FF:80:06:6C:59
+```
 
 ## System Limitations
 
 Beside having ROS environment and bt_joystick node configured,
 there are known design limitation or key operational thing to be known as follows
 
+    - We do not have a formula for running this node as non-root but are looking into that ability
     - Must start bluetooth.service with -compat and some config for a user in group bluetooth to use
     - User MUST hit M and B after EACH power-up of the controller to get to gamepad mode!
     - Must have the Bluetooth MAC address set in bt_joystick.yaml as  bt_mac_address rosparam
