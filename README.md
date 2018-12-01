@@ -51,7 +51,12 @@ The June 2018 Ubiquity kernel images are not yet setup to have the proper driver
 This node must have as a minimum the ROS parameter setup in bt_joystick.yaml for the controller in use.
 You may run this command on a configured system to find the Magicsee R1 MAC address then use it.
 
-    hcitool lescan               (After you find the Magicsee you may use Control-C)
+    sudo hcitool lescan          (After you find the Magicsee you may use Control-C)
+
+If the lescan does not find a driver you must have incorrectly configured kernel for use of bluetooth or missing other bluetooth components.
+You can look to see if hci0 bluetooth device exists.  If the Address is 00:00:00:00:00:00 or AA:AA:AA:AA:AA:AA there is driver problem.
+
+    sudo hciconfig               Must show hci0 device and a valid looking MAC address
 
 Here is an explanation of the parameters in bt_joystick.yaml
 

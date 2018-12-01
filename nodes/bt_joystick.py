@@ -53,6 +53,10 @@
 # Development Info
 # g_debug can enable ros logs or debug prints but do NOT ship in that state as it's flakey
 #
+#
+# Key Fixes:
+# 20181130       Believe to have fixed double free fault which was related to connection retries
+#
 # BUGS:
 # - Must add ability to know we lost connection and issue 0.0 speed till re-connect
 # - If we do loose connection must ignore first few notifications perhaps or we get a delayed command
@@ -75,7 +79,7 @@ from geometry_msgs.msg import Twist
 from sensor_msgs.msg import Joy
 
 # simple version string
-g_version = "20181012"
+g_version = "20181130"
 
 # Bluetooth MAC address if none is supplied
 g_bt_mac_address = "FF:FF:80:06:6C:59"
@@ -85,6 +89,8 @@ g_debug = False
 
 # Workaround for disconnect returning prior to truely being disconnected is an ugly delay
 g_disconnectTime = float(0.4)
+
+g_connectSuccessful = int(0)
 
 # Button and Joystick bytes
 g_joystickBits = int(0)
@@ -167,19 +173,33 @@ class Requester(GATTRequester):
 # Remain connected while receiving notifications
 class ReceiveNotificationLooper(object):
     def __init__(self, bt_mac_address):
+        global g_connectSuccessful
         self.received = Event()
         try:
             self.requester = Requester(self.received, bt_mac_address, False)
         except Exception:
             logAlways("Exception in ReceiveNotificationLooper Init!")
         try:
-            self.connect()
+            g_connectSuccessful = 0;
+            logDebug("Connecting ...")
+            while g_connectSuccessful == 0: 
+                self.connect()
+                if g_connectSuccessful == 0:
+                    logDebug("Connect failed. Try later")
+                    self.disconnect()
+                    time.sleep(2.0)
             logDebug("Connected..")
             # This is where we differ from simple ReceiveNotification
             while not rospy.is_shutdown(): 
                 if not self.requester.is_connected() == True:
                     logAlways("Connection lost! Re-connecting")
-                    self.connect()
+                    g_connectSuccessful = 0;
+                    while g_connectSuccessful == 0: 
+                        self.connect()
+                        if g_connectSuccessful == 0:
+                            logDebug("Connect failed. Try later")
+                            self.disconnect()
+                            time.sleep(2.0)
                     logAlways("Re-connected")
                 logDebug("Receive a notification from BT Mac " + bt_mac_address)
                 logDebug("Wait on notify.")
@@ -192,6 +212,7 @@ class ReceiveNotificationLooper(object):
 
 
     def connect(self):
+        global g_connectSuccessful
         if g_debug == True:
             logAlways("Flush stdout")
             sys.stdout.flush()
@@ -201,14 +222,19 @@ class ReceiveNotificationLooper(object):
 
         try:
             # if already connected connect() will throw runtime_error
+            logAlways("Attempt to connect: ")
             if self.requester.is_connected() == False:
                 # remove True for wait so can run as user  self.requester.connect(True)
                 self.requester.connect(True)
+                g_connectSuccessful = 1;
         except RuntimeError,e: 
-            logAlways("Exception in connect: " + e.message)
+            logDebug("Exception in connect: " + e.message)
+            g_connectSuccessful = 0;
+            time.sleep(0.3)
         except Exception:
-            logAlways("Exception in Connect!")
-            time.sleep(0.2)
+            logAlways("Unknown Exception in Connect!")
+            g_connectSuccessful = 0;
+            time.sleep(0.3)
 
         logDebug("OK!")     #time.sleep(0.5)   # was 1 sec prior to Jan 16
 
